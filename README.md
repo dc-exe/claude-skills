@@ -10,6 +10,7 @@ Setting up redirects in Webflow by hand is tedious and error-prone. This skill t
 
 - Accepts a CSV of old/new URLs **or** individual URLs pasted directly into chat
 - Detects and flags duplicate old paths before they cause Webflow import errors
+- Checks for circular redirects and redirect chains
 - Automatically checks for wildcard opportunities to consolidate multiple rules into one
 - Enforces correct rule ordering for Webflow's top-to-bottom matching logic
 - Escapes all special characters in old paths as required by Webflow
@@ -69,18 +70,6 @@ It adds a **Bulk Import** button to Webflow's redirect settings and is strongly 
 
 > **Webflow's native Bulk Import replaces your entire redirect list.** To safely add new redirects without losing existing ones, you'd have to export your current list, merge in the new entries, and re-import everything. The Finsweet extension lets you import additional redirects on top of your existing list without touching anything already there.
 
-### ⚠️ Important: Finsweet reverses CSV order on upload
-
-The Finsweet extension uploads CSV rows in reverse — the **first row in your CSV ends up at the bottom** of Webflow's redirect list, and the last row ends up at the top.
-
-Webflow matches redirects top-to-bottom and stops at the first match, so more specific rules must sit above broader wildcard rules. The CSV Claude generates accounts for this reversal automatically:
-
-| Position in CSV | Lands in Webflow | Matched |
-|---|---|---|
-| Broader wildcards (first) | Bottom | Last |
-| Specific wildcards (middle) | Middle | Second |
-| Individual rules (last) | Top | First ✅ |
-
 ---
 
 ## CSV format
@@ -90,21 +79,16 @@ Webflow matches redirects top-to-bottom and stops at the first match, so more sp
 | `path` | Old URL path (relative, special characters escaped) |
 | `targetPath` | New URL path (relative, no escaping needed) |
 
-**Example — correct CSV order for Finsweet upload:**
+**Example CSV:**
 
 ```csv
 path,targetPath
-/collection/(.*),/collection/%1
-/collection/artist/(.*),/artist/%1
 /collection/specific%-page,/new-page
+/collection/artist/(.*),/artist/%1
+/collection/(.*),/collection/%1
 ```
 
-After Finsweet upload, Webflow's order (top to bottom) becomes:
-```
-/collection/specific-page     → /new-page         ← matched first ✅
-/collection/artist/(.*)       → /artist/%1         ← matched second ✅
-/collection/(.*)              → /collection/%1     ← matched last ✅
-```
+Webflow's UI will show them in reverse (broader wildcard on top), but matching starts from the bottom — so specific rules fire first.
 
 ---
 
@@ -112,9 +96,11 @@ After Finsweet upload, Webflow's order (top to bottom) becomes:
 
 **Duplicate detection** — Scans all old paths for exact duplicates before generating any output. Webflow throws an error on duplicate old paths. Claude flags each one and asks whether you want to choose which to keep, or have it decide.
 
+**Circular redirects and redirect chains** — Scans all paths for circular redirects where a destination URL is also an old path that redirects back to the origin, creating an infinite loop. And also a redirect chain where the destination of one rule is the old path of another rule.
+
 **Wildcard consolidation** — When multiple old paths share a complete path segment prefix, the skill collapses them into a single wildcard rule. It never breaks mid-word to create a wildcard — the prefix must end cleanly at a `/`.
 
-**Rule ordering** — Produces CSV rows in the correct order for Finsweet's reversed upload: broader wildcards first, more specific wildcards next, individual rules last.
+**Rule ordering** — Produces CSV rows in the correct order for Finsweet upload: individual rules first, more specific wildcards next, broader wildcards last. Webflow matches from the bottom of its list upward, so this ensures specific rules always fire before broad wildcards.
 
 **Automatic escaping** — Special characters (`-`, `?`, `&`, `=`, `_`, `*`, etc.) are escaped in all old paths automatically. New paths are never escaped.
 

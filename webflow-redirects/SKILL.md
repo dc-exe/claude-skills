@@ -72,7 +72,62 @@ Which should I keep, or should I decide?
 
 ---
 
-### Step 3 — Check for wildcard opportunities (MANDATORY)
+### Step 3 — Check for circular redirects and redirect chains (MANDATORY)
+
+After resolving duplicates, scan all rules for two types of logical errors:
+
+---
+
+#### Circular Redirects (A → B → A)
+
+A circular redirect occurs when a destination URL is also an old path that redirects back to the origin, creating an infinite loop.
+
+**How to detect:** For each rule `A → B`, check if any other rule has `B` as its old path pointing back to `A` (directly or through a chain).
+
+**Examples:**
+```
+CIRCULAR REDIRECT DETECTED:
+  /old-page → /new-page
+  /new-page → /old-page   ← loops back!
+```
+
+**When found:** Flag each circular loop clearly and ask the user:
+
+> "I found a circular redirect — these two rules point back at each other and will cause an infinite loop. Which rule would you like to keep, or should I decide?"
+
+- **User chooses** — keep their selected rule, remove the other.
+- **User is unsure / Claude decides** — keep the last entry in the list, remove the earlier one. Always tell the user which was removed.
+
+---
+
+#### Redirect Chains (A → B → C)
+
+A redirect chain occurs when the destination of one rule is the old path of another rule, causing visitors to be redirected multiple times before reaching their final destination. This hurts performance and SEO.
+
+**How to detect:** For each rule `A → B`, check if `B` appears as an old path in any other rule `B → C`. If so, the chain should be collapsed to `A → C` directly.
+
+**Examples:**
+```
+REDIRECT CHAIN DETECTED:
+  /old-page → /interim-page
+  /interim-page → /final-page   ← chain!
+
+Fix: collapse to /old-page → /final-page
+```
+
+**When found:** Flag each chain and ask the user:
+
+> "I found a redirect chain — visiting /old-page will redirect to /interim-page, then again to /final-page. Should I collapse this to a direct redirect /old-page → /final-page, or would you like to handle it differently?"
+
+- **User confirms collapse** — update the first rule to point directly to the final destination.
+- **User is unsure / Claude decides** — collapse the chain automatically and report the change.
+- **Multi-hop chains** — follow the full chain to its end (A → B → C → D becomes A → D) before reporting.
+
+Always tell the user what was changed and why.
+
+---
+
+### Step 4 — Check for wildcard opportunities (MANDATORY)
 
 Before generating any rules, scan ALL old paths together and ask: **can any be combined into a wildcard rule?**
 
@@ -110,46 +165,41 @@ A wrong wildcard misdirects traffic. Only collapse when the shared prefix is a c
 
 ---
 
-### Step 4 — Rule ordering (MANDATORY)
+### Step 5 — Rule ordering (MANDATORY)
 
-**How Webflow processes redirects:** Webflow checks rules top-to-bottom and stops at the first match. This means more specific rules must appear **above** broader wildcard rules in Webflow's redirect list.
+**How Webflow processes redirects:** Webflow checks rules from the bottom of the list upward — the last added entry appears at the top of the UI, but matching starts from the bottom. This means broader wildcard rules must be added last (so they end up at the top of the UI and are matched last), and specific rules must be added first (so they end up lower and are matched first).
 
-**How Finsweet Bulk Import affects order:** The [Finsweet Attributes Chrome Extension](https://chromewebstore.google.com/detail/mjfibgdpclkaemogkfadpbdfoinnejep) adds a Bulk Import button to Webflow that is strongly recommended over Webflow's native import. However, **Finsweet reverses the CSV order on upload** — the first row in the CSV ends up at the bottom of Webflow's list, and the last row ends up at the top.
-
-This means the CSV order must be the **reverse** of the desired Webflow order:
-
-- **In Webflow** (top = matched first): specific rules on top, broader wildcards below
-- **In CSV** (for Finsweet upload): broader wildcards first, specific rules last
+**How Finsweet Bulk Import affects order:** The [Finsweet Attributes Chrome Extension](https://chromewebstore.google.com/detail/mjfibgdpclkaemogkfadpbdfoinnejep) adds a Bulk Import button that imports CSV rows in order — the first row in the CSV is added first, and therefore ends up at the bottom of Webflow's list (matched first). The last row ends up at the top (matched last).
 
 **CSV ordering rules:**
-1. Wildcard rules come **first** in the CSV (they will end up at the bottom in Webflow, matched last)
-2. Among wildcard rules, **broader wildcards come before more specific wildcards** in the CSV (so the more specific wildcard ends up above the broader one in Webflow)
-3. Individual (specific) rules come **last** in the CSV (they will end up at the top in Webflow, matched first)
+1. **Individual (specific) rules come first** in the CSV — they land at the bottom of Webflow's list and are matched first
+2. **More specific wildcard rules come next** — they land above individual rules in Webflow, matched after specific rules
+3. **Broader wildcard rules come last** in the CSV — they land at the top of Webflow's list and are matched last
 
 ✅ CORRECT CSV ordering (Finsweet upload):
 ```
-/collection/(.*),/collection/%1               ← broader wildcard first in CSV (lands lower in Webflow)
-/collection/artist/(.*),/artist/%1            ← specific wildcard next in CSV (lands above broader in Webflow)
-/collection/specific%-page,/new-page          ← individual rule last in CSV (lands at top in Webflow) ✅
+/collection/specific%-page,/new-page          ← individual first in CSV (lands at bottom in Webflow, matched first) ✅
+/collection/artist/(.*),/artist/%1            ← specific wildcard next (matched second)
+/collection/(.*),/collection/%1               ← broader wildcard last in CSV (lands at top in Webflow, matched last) ✅
 ```
 
-The resulting Webflow order (top to bottom) will be:
+The resulting Webflow UI order (top to bottom) will be:
 ```
-/collection/specific%-page → /new-page        ← matched first ✅
+/collection/(.*) → /collection/%1             ← shown at top, but matched last ✅
 /collection/artist/(.*) → /artist/%1          ← matched second ✅
-/collection/(.*) → /collection/%1             ← matched last ✅
+/collection/specific%-page → /new-page        ← shown at bottom, but matched first ✅
 ```
 
-❌ WRONG CSV ordering (Finsweet upload):
+❌ WRONG CSV ordering:
 ```
-/collection/specific%-page,/new-page          ← lands at bottom in Webflow — never reached ✗
-/collection/artist/(.*),/artist/%1            ← swallowed by broader wildcard above it ✗
-/collection/(.*),/collection/%1               ← lands at top — catches everything ✗
+/collection/(.*),/collection/%1               ← broader wildcard first — lands at bottom, matches everything first ✗
+/collection/artist/(.*),/artist/%1            ← never reached ✗
+/collection/specific%-page,/new-page          ← never reached ✗
 ```
 
 ---
 
-### Step 5 — Apply escape characters (MANDATORY)
+### Step 6 — Apply escape characters (MANDATORY)
 
 Before finalising any old path, escape ALL special characters using `%`. No exceptions.
 
@@ -170,20 +220,20 @@ Before finalising any old path, escape ALL special characters using `%`. No exce
 
 ---
 
-### Step 6 — Generate the CSV (DEFAULT — always do this)
+### Step 7 — Generate the CSV (DEFAULT — always do this)
 
 Produce a CSV with two columns: `path` and `targetPath`.
 
-Ordering rules within the CSV (designed for Finsweet Bulk Import, which reverses order on upload):
-1. **Broader wildcard rules first** (e.g. `/collection/(.*)`)
-2. **More specific wildcard rules next** (e.g. `/collection/artist/(.*)`)
-3. **Individual (specific) rules last** (e.g. `/collection/specific%-page`)
+Ordering rules within the CSV (Finsweet Bulk Import adds rows in CSV order — first row lands at the bottom of Webflow's list and is matched first):
+1. **Individual (specific) rules first** (e.g. `/collection/specific%-page`) — matched first
+2. **More specific wildcard rules next** (e.g. `/collection/artist/(.*)`) — matched second
+3. **Broader wildcard rules last** (e.g. `/collection/(.*)`) — matched last
 
 The CSV is the safe default — it works for all Webflow plans.
 
 ---
 
-### Step 7 — After delivering the CSV, ask about Enterprise / MCP
+### Step 8 — After delivering the CSV, ask about Enterprise / MCP
 
 Once the CSV is ready, ask:
 
@@ -194,7 +244,7 @@ Once the CSV is ready, ask:
 
 ---
 
-### Step 8 — Suggest testing
+### Step 9 — Suggest testing
 Tell the user to open each old URL in a new browser tab to verify it redirects correctly.
 
 ---
